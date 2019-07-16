@@ -382,7 +382,7 @@ class DataModel(object):
 class FlowBlockModel(object):
 
     def __init__(self, env, id, name_i18n, filename=None, fields=None,
-                 order=None, button_label=None):
+                 order=None, button_label=None, parent=None):
         self.env = env
         self.id = id
         self.name_i18n = name_i18n
@@ -394,6 +394,8 @@ class FlowBlockModel(object):
             order = 100
         self.order = order
         self.button_label = button_label
+
+        self.parent = parent
 
         self.field_map = dict((x.name, x) for x in fields)
         self.field_map['_flowblock'] = Field(
@@ -485,6 +487,7 @@ def flowblock_data_from_ini(id, inifile):
         fields=fielddata_from_ini(inifile),
         order=inifile.get_int('block.order'),
         button_label=inifile.get('block.button_label'),
+        parent=inifile.get('block.inherits'),
     )
 
 
@@ -563,15 +566,33 @@ def datamodel_from_data(env, model_data, parent=None):
     )
 
 
-def flowblock_from_data(env, block_data):
+def flowblock_from_data(env, block_data, parent):
+    def get_value(key):
+        path = key.split('.')
+        node = model_data
+        for item in path:
+            node = node.get(item)
+        if node is not None:
+            return node
+        if parent is not None:
+            node = parent
+            for item in path:
+                node = getattr(node, item)
+            return node
+        return None
+
+    fields = fields_from_data(env, block_data['fields'],
+                              parent and parent.fields or None)
+
     return FlowBlockModel(
         env,
         filename=block_data['filename'],
         id=block_data['id'],
         name_i18n=block_data['name_i18n'],
-        fields=fields_from_data(env, block_data['fields']),
+        fields=fields,
         order=block_data['order'],
         button_label=block_data['button_label'],
+        parent=parent,
     )
 
 
@@ -640,12 +661,37 @@ def load_flowblocks(env):
     # So paths are loaded in reverse order
     paths = list(reversed(env.theme_paths)) + [env.root_path]
     paths = [os.path.join(p, 'flowblocks') for p in paths]
-    rv = {}
+    data = {}
 
     for path in paths:
         for flowblock_id, inifile in iter_inis(path):
-            rv[flowblock_id] = flowblock_from_data(env,
-                flowblock_data_from_ini(flowblock_id, inifile))
+            data[flowblock_id] = flowblock_data_from_ini(flowblock_id, inifile)
+
+    rv = {}
+
+    def get_flowblock(flowblock_id):
+        flowblock = rv.get(flowblock_id)
+        if flowblock is not None:
+            return flowblock
+        if flowblock_id in data:
+            return create_flowblock(flowblock_id)
+        return None
+
+    def create_flowblock(flowblock_id):
+        flowblock_data = data.get(flowblock_id)
+        if flowblock_data is None:
+            raise RuntimeError('Flowblock %r not found' % flowblock_id)
+
+        if flowblock_data['parent'] is not None:
+            parent = get_flowblock(flowblock_data['parent'])
+        else:
+            parent = None
+
+        rv[flowblock_id] = mod = flowblock_from_data(env, flowblock_data, parent)
+        return mod
+
+    for flowblock_id in data:
+        get_flowblock(flowblock_id)
 
     return rv
 
